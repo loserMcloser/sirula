@@ -50,7 +50,11 @@ fn app_startup(application: &gtk::Application) {
     let launch_cgroups = config.cgroups;
     let cmd_prefix = config.command_prefix.clone();
 
-    let window = gtk::ApplicationWindow::new(application);
+    let window = gtk::Window::builder()
+        .application(application)
+        .name("sirula")
+        .build();
+
     window.set_size_request(config.width, config.height);
 
     gtk_layer_shell::init_for_window(&window);
@@ -73,7 +77,7 @@ fn app_startup(application: &gtk::Application) {
     gtk_layer_shell::set_anchor(&window, gtk_layer_shell::Edge::Bottom, config.anchor_bottom);
 
     window.set_decorated(false);
-    window.set_app_paintable(true);
+    // window.set_app_paintable(true);
 
     let vbox = BoxBuilder::new()
         .name(ROOT_BOX_NAME)
