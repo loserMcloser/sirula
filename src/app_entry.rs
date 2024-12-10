@@ -51,7 +51,7 @@ impl AppEntry {
         let attr_list = self.label.attributes().unwrap_or_default();
         self.score = if pattern.is_empty() {
             self.label.set_attributes(None);
-            100
+            default_score(config.start_empty, self.history.usage_count)
         } else if let Some((score, indices)) = matcher.fuzzy_indices(&self.search_string, pattern) {
             for i in indices {
                 if i < self.display_string.len() {
@@ -148,6 +148,14 @@ fn add_attrs(list: &AttrList, attrs: &Vec<Attribute>, start: u32, end: u32) {
     }
 }
 
+fn default_score(start_empty: bool, usage_count: u32) -> i64 {
+    if !start_empty || usage_count > 0 {
+        100
+    } else {
+        0
+    }
+}
+
 pub fn load_entries(
     config: &Config,
     history: &HashMap<String, HistoryData>,
@@ -192,9 +200,14 @@ pub fn load_entries(
                         || !name.to_lowercase().contains(&e.to_lowercase())) =>
                 {
                     (
-                        format!("{}{}{}",
+                        format!(
+                            "{}{}{}",
                             name,
-                            if config.extra_field_newline {"\n"} else {" "},
+                            if config.extra_field_newline {
+                                "\n"
+                            } else {
+                                " "
+                            },
                             e
                         ),
                         Some((
@@ -262,6 +275,7 @@ pub fn load_entries(
         } else {
             0
         };
+        let score = default_score(config.start_empty, usage_count);
 
         let app_entry = AppEntry {
             display_string,
@@ -269,7 +283,7 @@ pub fn load_entries(
             extra_range,
             info: app,
             label,
-            score: 100,
+            score,
             history: HistoryData {
                 last_used,
                 usage_count,
