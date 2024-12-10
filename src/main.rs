@@ -45,7 +45,7 @@ use locale::*;
 mod history;
 use history::*;
 
-fn app_startup(application: &gtk::Application) {
+fn app_startup(application: &gtk::Application, daemon_mode: bool) {
     let config = Config::load();
     let cmd_prefix = config.command_prefix.clone();
 
@@ -100,44 +100,61 @@ fn app_startup(application: &gtk::Application) {
         listbox.add(row);
     }
 
-    window.connect_key_press_event(clone!(entry, listbox, entries => move |window, event| {
-        use constants::*;
-        #[allow(non_upper_case_globals)]
-        Inhibit(match event.keyval() {
-            Escape => {
-                window.close();
-                true
-            },
-            Down | KP_Down | Tab if entry.has_focus() => {
-                if let Some(r0) = listbox.row_at_index(0) {
-                    let es = entries.borrow();
-                    if r0.is_selected() {
-                        if let Some(r1) = listbox.row_at_index(1) {
-                            if let Some(app_entry) = es.get(&r1) {
-                                if !app_entry.hidden() {
-                                    listbox.select_row(Some(&r1));
+    fn hide_or_close(daemon_mode: bool, window: &gtk::Window, entry: &gtk::Entry) {
+        if daemon_mode {
+            window.hide();
+            let cur_text = entry.text();
+            if cur_text.is_empty() {
+                entry.emit_by_name::<()>("changed", &[]);
+            } else {
+                entry.set_text(&"");
+            }
+            entry.grab_focus_without_selecting();
+        } else {
+            window.close();
+        }
+    }
+
+    window.connect_key_press_event(
+        clone!(entry, listbox, entries, daemon_mode => move |window, event| {
+            use constants::*;
+            #[allow(non_upper_case_globals)]
+            Inhibit(match event.keyval() {
+                Escape => {
+                    hide_or_close(daemon_mode, window, &entry);
+                    true
+                },
+                Down | KP_Down | Tab if entry.has_focus() => {
+                    if let Some(r0) = listbox.row_at_index(0) {
+                        let es = entries.borrow();
+                        if r0.is_selected() {
+                            if let Some(r1) = listbox.row_at_index(1) {
+                                if let Some(app_entry) = es.get(&r1) {
+                                    if !app_entry.hidden() {
+                                        listbox.select_row(Some(&r1));
+                                    }
                                 }
                             }
-                        }
-                    } else if let Some(app_entry) = es.get(&r0) {
-                        if !app_entry.hidden() {
-                            listbox.select_row(Some(&r0));
+                        } else if let Some(app_entry) = es.get(&r0) {
+                            if !app_entry.hidden() {
+                                listbox.select_row(Some(&r0));
+                            }
                         }
                     }
+                    false
+                },
+                Up | Down | KP_Up | KP_Down | Page_Up | Page_Down | KP_Page_Up | KP_Page_Down | Tab
+                | Shift_L | Shift_R | Control_L | Control_R | Alt_L | Alt_R | ISO_Left_Tab | Return
+                | KP_Enter => false,
+                _ => {
+                    if !event.is_modifier() && !entry.has_focus() {
+                        entry.grab_focus_without_selecting();
+                    }
+                    false
                 }
-                false
-            },
-            Up | Down | KP_Up | KP_Down | Page_Up | Page_Down | KP_Page_Up | KP_Page_Down | Tab
-            | Shift_L | Shift_R | Control_L | Control_R | Alt_L | Alt_R | ISO_Left_Tab | Return
-            | KP_Enter => false,
-            _ => {
-                if !event.is_modifier() && !entry.has_focus() {
-                    entry.grab_focus_without_selecting();
-                }
-                false
-            }
-        })
-    }));
+            })
+        }),
+    );
 
     let matcher = SkimMatcherV2::default();
     let term_command = config.term_command.clone();
@@ -159,30 +176,34 @@ fn app_startup(application: &gtk::Application) {
         listbox.select_row(listbox.row_at_index(0).as_ref());
     }));
 
-    entry.connect_activate(clone!(listbox, window => move |e| {
+    entry.connect_activate(clone!(listbox, window, daemon_mode => move |e| {
         let text = e.text();
         if is_cmd(&text, &cmd_prefix) { // command execution direct
             let cmd_line = &text[cmd_prefix.len()..].trim();
             launch_cmd(cmd_line);
-            window.close();
+            hide_or_close(daemon_mode, &window, &e);
         } else if let Some(row) = listbox.row_at_index(0) {
             row.activate();
         }
     }));
 
-    listbox.connect_row_activated(clone!(entries, window, history => move |_, r| {
-        let es = entries.borrow();
-        let e = &es[r];
-        if !e.hidden() {
-            launch_app(&e.info, term_command.as_deref());
+    listbox.connect_row_activated(
+        clone!(entry, entries, window, history, daemon_mode => move |_, r| {
+            {
+                let es = entries.borrow();
+                let e = &es[r];
+                if e.hidden() {
+                    return;
+                }
+                launch_app(&e.info, term_command.as_deref());
 
-            let mut history = history.borrow_mut();
-            update_history(&mut history, e.info.id().unwrap().as_str());
-            save_history(&history);
-
-            window.close();
-        }
-    }));
+                let mut history = history.borrow_mut();
+                update_history(&mut history, e.info.id().unwrap().as_str());
+                save_history(&history);
+            }
+            hide_or_close(daemon_mode, &window, &entry);
+        }),
+    );
 
     listbox.set_filter_func(Some(Box::new(clone!(entries => move |r| {
         let e = entries.borrow();
@@ -197,22 +218,42 @@ fn app_startup(application: &gtk::Application) {
     listbox.select_row(listbox.row_at_index(0).as_ref());
 
     window.add(&vbox);
-    window.show_all()
+
+    application.connect_activate(clone!(window => move |_| {
+        window.show_all()
+    }));
 }
 
 fn main() {
     set_locale(LC_ALL, "");
 
-    let application = gtk::Application::new(Some(APP_ID), Default::default());
+    let arg_string_vec: Vec<String> = args().collect();
+    let daemon = arg_string_vec.iter().any(|s| s == "--daemon" || s == "-d");
+    let app_flags = if daemon {
+        gio::ApplicationFlags::IS_SERVICE
+    } else {
+        Default::default()
+    };
+    let application = gtk::Application::new(Some(APP_ID), app_flags);
 
-    application.connect_startup(|app| {
+    application.add_main_option(
+        "daemon",
+        glib::Char::from(b'd'),
+        glib::OptionFlags::IN_MAIN,
+        glib::OptionArg::None,
+        "start up in daemon mode",
+        None,
+    );
+
+    application.connect_handle_local_options(|_, _| {
+        // handled above
+        -1
+    });
+
+    application.connect_startup(clone!(daemon => move |app| {
         load_css();
-        app_startup(app);
-    });
+        app_startup(app, daemon);
+    }));
 
-    application.connect_activate(|_| {
-        //do nothing
-    });
-
-    application.run_with_args(&args().collect::<Vec<_>>());
+    application.run_with_args(&arg_string_vec);
 }
